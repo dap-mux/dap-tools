@@ -5,8 +5,10 @@
 //! What you type runs inside the live program, and the commands move the shared
 //! session, so either can change what every client on the mux sees.
 
+mod outcome;
 mod repl;
 
+use std::fmt::Write as _;
 use std::io::Write;
 
 use anyhow::Result;
@@ -14,10 +16,9 @@ use clap::Parser;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use dap_client::dap::types::{EventMessage, StoppedBody};
 use dap_client::dap::{self, ConnEvent, DapClient};
-use dap_client::model::SessionState;
 
+use outcome::{Outcome, decide_event, decide_input};
 use repl::Session;
 
 /// Interactive DAP console for a dap-mux session.
@@ -53,11 +54,12 @@ async fn main() -> Result<()> {
     std::process::exit(code);
 }
 
-/// What a DAP event did, so the loop knows whether to redraw or exit.
-enum EventResult {
-    Ignored,
-    Printed,
-    Ended,
+/// Where an outcome came from. Output for an event starts on a fresh line so it
+/// breaks away from a possibly dangling prompt, the way input output, which
+/// always follows a freshly typed line, does not need to.
+enum Source {
+    Input,
+    Event,
 }
 
 fn prompt() {
@@ -89,7 +91,10 @@ async fn run(
             }
             line = lines.next_line() => match line {
                 Ok(Some(raw)) => {
-                    if handle_input(&client, &mut session, &mut last_input, raw.trim()).await {
+                    let outcome =
+                        decide_input(&client, &mut session, &mut last_input, raw.trim()).await;
+                    render(&outcome, Source::Input);
+                    if matches!(outcome, Outcome::Quit) {
                         break;
                     }
                     prompt();
@@ -116,13 +121,18 @@ async fn run(
                     println!("\n■ session ended.");
                     break;
                 }
-                Some(ConnEvent::Dap(msg)) => match handle_event(&client, &mut session, msg).await {
-                    EventResult::Ignored => {}
-                    // Re-emit the prompt only when an event printed, so the
-                    // stream of ignored events stays silent.
-                    EventResult::Printed => prompt(),
-                    EventResult::Ended => break,
-                },
+                Some(ConnEvent::Dap(msg)) => {
+                    let outcome = decide_event(&client, &mut session, msg).await;
+                    let shown = render(&outcome, Source::Event);
+                    if matches!(outcome, Outcome::Ended) {
+                        break;
+                    }
+                    // Re-emit the prompt only when the event showed something, so
+                    // the stream of ignored events stays silent.
+                    if shown {
+                        prompt();
+                    }
+                }
             },
         }
     }
@@ -131,217 +141,93 @@ async fn run(
     Ok(exit_code)
 }
 
-/// Route one line of input. Returns true when the user asked to quit.
-async fn handle_input(
-    client: &DapClient,
-    session: &mut Session,
-    last_input: &mut Option<String>,
-    input: &str,
-) -> bool {
-    // An empty line repeats the last input, command or expression, so pressing
-    // Enter keeps stepping or re-runs the last expression. Otherwise the line
-    // becomes the new repeat target.
-    let line = if input.is_empty() {
-        match last_input {
-            Some(prev) => prev.clone(),
-            None => return false,
-        }
-    } else {
-        *last_input = Some(input.to_string());
-        input.to_string()
-    };
-
-    match line.strip_prefix(':') {
-        Some(command) => run_command(client, session, command.trim()).await,
-        None => {
-            eval_line(client, session, &line).await;
-            false
-        }
-    }
-}
-
-/// Run a colon command. Returns true when the user asked to quit.
-async fn run_command(client: &DapClient, session: &mut Session, cmd: &str) -> bool {
-    let mut parts = cmd.split_whitespace();
-    let Some(verb) = parts.next() else {
-        return false;
-    };
-    match verb {
-        "continue" | "c" => drive(client, session, "continue").await,
-        "next" | "n" => drive(client, session, "next").await,
-        "step" | "s" => drive(client, session, "stepIn").await,
-        "finish" | "o" => drive(client, session, "stepOut").await,
-        "pause" => pause(client, session).await,
-        "up" => navigate(session, true),
-        "down" => navigate(session, false),
-        "frame" => match parts.next().and_then(|n| n.parse::<usize>().ok()) {
-            Some(index) => select_frame(session, index),
-            None => println!("-- usage: :frame <index>"),
-        },
-        "bt" | "where" => print_stack(session),
-        "help" => print_help(),
-        "quit" | "q" => return true,
-        other => println!("-- :{other} not recognized (try :help)"),
-    }
-    false
-}
-
-/// Issue a step or continue against the stopped thread. The resulting stop or
-/// resume is announced by the event loop.
-async fn drive(client: &DapClient, session: &Session, command: &str) {
-    if session.state != SessionState::Stopped {
-        println!("-- can't {command} unless stopped");
-        return;
-    }
-    let Some(thread_id) = session.thread_id() else {
-        println!("-- can't {command}: no thread");
-        return;
-    };
-    if let Err(e) = repl::drive(client, command, thread_id).await {
-        println!("!! {e}");
-    }
-}
-
-async fn pause(client: &DapClient, session: &Session) {
-    if session.state != SessionState::Running {
-        println!("-- can't pause unless running");
-        return;
-    }
-    let Some(thread_id) = session.thread_id() else {
-        println!("-- can't pause: no thread");
-        return;
-    };
-    if let Err(e) = repl::drive(client, "pause", thread_id).await {
-        println!("!! {e}");
-    }
-}
-
-fn navigate(session: &mut Session, up: bool) {
-    if session.current_frame().is_none() {
-        println!("-- not stopped at a frame");
-        return;
-    }
-    let moved = if up {
-        session.select_up()
-    } else {
-        session.select_down()
-    };
-    if moved {
-        print_selected_frame(session);
-    } else if up {
-        println!("-- already at the outermost frame");
-    } else {
-        println!("-- already at the innermost frame");
-    }
-}
-
-fn select_frame(session: &mut Session, index: usize) {
-    if session.current_frame().is_none() {
-        println!("-- not stopped at a frame");
-    } else if session.select_index(index) {
-        print_selected_frame(session);
-    } else {
-        println!(
-            "-- no frame {index}, the stack has {}",
-            session.stack().len()
-        );
-    }
-}
-
-fn print_selected_frame(session: &Session) {
-    if let Some(frame) = session.current_frame() {
-        println!(
-            "#{} {} @ line {}",
-            session.selected(),
-            frame.name,
-            frame.line
-        );
-    }
-}
-
-fn print_stack(session: &Session) {
-    if session.stack().is_empty() {
-        println!("-- no stack, not stopped at a frame");
-        return;
-    }
-    for (index, frame) in session.stack().iter().enumerate() {
-        let marker = if index == session.selected() {
-            "*"
-        } else {
-            " "
-        };
-        println!("{marker} #{index} {} @ line {}", frame.name, frame.line);
-    }
-}
-
-fn print_help() {
-    println!("commands:");
-    println!("  :c :continue   resume execution");
-    println!("  :n :next       step over");
-    println!("  :s :step       step into");
-    println!("  :o :finish     step out");
-    println!("  :pause         pause a running program");
-    println!("  :up :down      move to the calling or called frame");
-    println!("  :frame <n>     select frame n");
-    println!("  :bt :where     print the call stack");
-    println!("  :help          show this list");
-    println!("  :q :quit       exit");
-    println!("anything else is evaluated in the selected frame.");
-    println!("an empty line repeats the last input.");
-}
-
-/// Evaluate one entered line against the selected frame, or explain why it can't.
-async fn eval_line(client: &DapClient, session: &Session, expr: &str) {
-    let Some(frame_id) = session.frame_id() else {
-        let why = match session.state {
-            SessionState::Running => "the program is running",
-            SessionState::Ended => "the session has ended",
-            SessionState::Stopped => "no frame is resolved at this stop",
-            SessionState::Connecting => "not stopped yet",
-        };
-        println!("-- nothing to evaluate against ({why})");
-        return;
-    };
-    match repl::evaluate(client, expr, frame_id).await {
-        Ok(ev) => match ev.ty {
-            Some(ty) if !ty.is_empty() => println!("=> {} : {ty}", ev.result),
-            _ => println!("=> {}", ev.result),
-        },
-        Err(e) => println!("!! {e}"),
-    }
-}
-
-/// Update session state from a DAP event. Each printed line starts with a
-/// newline so it breaks away from a dangling prompt.
-async fn handle_event(client: &DapClient, session: &mut Session, msg: EventMessage) -> EventResult {
-    match msg.event.as_str() {
-        "stopped" => {
-            let body: StoppedBody = msg
-                .body
-                .and_then(|b| serde_json::from_value(b).ok())
-                .unwrap_or_default();
-            match session.on_stopped(client, body.thread_id).await {
-                Ok(()) => match session.current_frame() {
-                    Some(frame) => println!(
-                        "\n⏸ stop ({}) → {} @ line {}",
-                        body.reason, frame.name, frame.line
-                    ),
-                    None => println!("\n⏸ stopped ({}) — no frame resolved", body.reason),
-                },
-                Err(e) => println!("\n!! {e}"),
+/// Turn an outcome into the terminal output it stands for. This is the only place
+/// the print front-end writes. It returns whether anything was shown, so the loop
+/// can skip the reprompt when an outcome is silent.
+fn render(outcome: &Outcome, source: Source) -> bool {
+    let mut out = String::new();
+    match outcome {
+        Outcome::Evaluated { value, ty } => match ty {
+            Some(ty) if !ty.is_empty() => {
+                let _ = writeln!(out, "=> {value} : {ty}");
             }
-            EventResult::Printed
+            _ => {
+                let _ = writeln!(out, "=> {value}");
+            }
+        },
+        Outcome::EvaluationUnavailable { reason }
+        | Outcome::DriveUnavailable { reason }
+        | Outcome::NavigationBlocked { reason } => {
+            let _ = writeln!(out, "-- {reason}");
         }
-        "continued" => {
-            session.on_continued();
-            println!("\n▶ running…");
-            EventResult::Printed
+        Outcome::FrameSelected { index, frame } => {
+            let _ = writeln!(out, "#{index} {} @ line {}", frame.name, frame.line);
         }
-        "terminated" | "exited" => {
-            session.on_ended();
-            println!("\n■ session ended.");
-            EventResult::Ended
+        Outcome::Stack { frames, selected } => {
+            for (index, frame) in frames.iter().enumerate() {
+                let marker = if index == *selected { "*" } else { " " };
+                let _ = writeln!(
+                    out,
+                    "{marker} #{index} {} @ line {}",
+                    frame.name, frame.line
+                );
+            }
         }
-        _ => EventResult::Ignored,
+        Outcome::Help => write_help(&mut out),
+        Outcome::Unrecognized { command } => {
+            let _ = writeln!(out, "-- :{command} not recognized (try :help)");
+        }
+        Outcome::Failed { error } => {
+            let _ = writeln!(out, "!! {error}");
+        }
+        Outcome::Stopped { reason, frame } => match frame {
+            Some(frame) => {
+                let _ = writeln!(
+                    out,
+                    "⏸ stop ({reason}) → {} @ line {}",
+                    frame.name, frame.line
+                );
+            }
+            None => {
+                let _ = writeln!(out, "⏸ stopped ({reason}) — no frame resolved");
+            }
+        },
+        Outcome::Resumed => {
+            let _ = writeln!(out, "▶ running…");
+        }
+        Outcome::Ended => {
+            let _ = writeln!(out, "■ session ended.");
+        }
+        Outcome::DriveIssued | Outcome::Quit | Outcome::Noop => {}
     }
+
+    if out.is_empty() {
+        return false;
+    }
+    let mut stdout = std::io::stdout();
+    if matches!(source, Source::Event) {
+        let _ = stdout.write_all(b"\n");
+    }
+    let _ = stdout.write_all(out.as_bytes());
+    let _ = stdout.flush();
+    true
+}
+
+fn write_help(out: &mut String) {
+    out.push_str(
+        "commands:
+  :c :continue   resume execution
+  :n :next       step over
+  :s :step       step into
+  :o :finish     step out
+  :pause         pause a running program
+  :up :down      move to the calling or called frame
+  :frame <n>     select frame n
+  :bt :where     print the call stack
+  :help          show this list
+  :q :quit       exit
+anything else is evaluated in the selected frame.
+an empty line repeats the last input.
+",
+    );
 }
