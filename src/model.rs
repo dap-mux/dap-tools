@@ -57,8 +57,8 @@ pub struct FrameHeader {
     pub stop_number: u64,
 }
 
-/// The result of resolving a stop: a header, the resolved frame id (needed to
-/// `evaluate` watches against this frame), and seeded scope roots.
+/// The result of resolving a stop: a header, the resolved frame id needed to
+/// `evaluate` watches against this frame, and seeded scope roots.
 pub struct FrameContext {
     pub header: FrameHeader,
     pub frame_id: i64,
@@ -77,7 +77,7 @@ pub fn is_noise(v: &Variable) -> bool {
         && v.variables_reference != 0
 }
 
-/// Build a tree node from a DAP variable (not yet expanded, children unfetched).
+/// Build a tree node from a DAP variable.
 pub fn node_from_var(v: &Variable) -> VarNode {
     VarNode {
         name: v.name.clone(),
@@ -109,7 +109,7 @@ pub fn node_from_evaluate(expression: &str, body: EvaluateBody) -> VarNode {
 /// Uses `context: "watch"` and only ever an adapter-provided `evaluateName`, so
 /// it recomputes an existing variable and stays side-effect-free — the
 /// observer-only contract holds. An `Err` means the expression did not resolve
-/// in the current frame (e.g. stepped out of scope); the caller keeps the watch
+/// in the current frame (e.g. stepped out of scope). The caller keeps the watch
 /// pinned and renders it as unavailable.
 pub async fn evaluate_watch(
     client: &DapClient,
@@ -158,15 +158,14 @@ pub fn any_locals_scope(scopes: &[Scope]) -> bool {
 /// Whether a scope should be opened/shown by default. `Locals`-style scopes
 /// always are. When a frame has none — an adapter we haven't seen, with exotic
 /// naming and no hint — the first scope is the fallback, since adapters
-/// conventionally list the most relevant scope first; this keeps a useful tree
+/// conventionally list the most relevant scope first. This keeps a useful tree
 /// open instead of a fully collapsed one. `any_locals` is whether the frame has
 /// any locals scope at all, computed once per frame by the caller.
 pub fn scope_opens_by_default(scope: &Scope, index: usize, any_locals: bool) -> bool {
     is_locals_scope(&scope.name, scope.presentation_hint.as_deref()) || (!any_locals && index == 0)
 }
 
-/// Fetch and filter a node's children. Tolerates a stale-reference error
-/// response.
+/// Fetch and filter a node's children. Tolerates a stale-reference error response.
 pub async fn fetch_children(client: &DapClient, var_ref: i64) -> Vec<VarNode> {
     match client
         .request("variables", Some(json!({ "variablesReference": var_ref })))
@@ -187,9 +186,9 @@ pub async fn fetch_children(client: &DapClient, var_ref: i64) -> Vec<VarNode> {
 
 /// Resolve the stopped thread's top frame via `stackTrace`.
 ///
-/// The stop event's `thread_id` is preferred and used directly; only when it is
+/// The stop event's `thread_id` is preferred and used directly. Only when it is
 /// absent do we query `threads` and fall back to the first reported thread.
-/// Returns `Ok(None)` for the no-threads / no-frames case (shown as idle).
+/// Returns `Ok(None)` for the no-threads / no-frames case which are shown as idle.
 pub async fn resolve_top_frame(
     client: &DapClient,
     thread_hint: Option<i64>,

@@ -286,9 +286,9 @@ impl App {
                 // are now invalid, so a `build_frame` or fetch still in flight
                 // from that stop would land stale. Bump the epoch so those
                 // replies are discarded rather than applied over the running
-                // session (which would repopulate the frame and fire watch
-                // `evaluate`s against a dead frame). We deliberately keep the
-                // old tree on screen, flagged stale; the next `stopped`
+                // session which would repopulate the frame and fire watch
+                // `evaluate`s against a dead frame. We deliberately keep the
+                // old tree on screen, flagged stale. The next `stopped`
                 // re-roots it.
                 self.epoch += 1;
                 self.state = SessionState::Running;
@@ -323,8 +323,7 @@ impl App {
                     Some(c) => {
                         self.header = Some(c.header);
                         self.frame_id = Some(c.frame_id);
-                        // Deref-assign (not `self.roots = …`) so the version
-                        // bumps and the row cache rebuilds.
+                        // Deref-assign so the version bumps and the row cache rebuilds.
                         *self.roots = c.roots;
                         self.status = "stopped".to_string();
                         // Now that the frame is known, evaluate every watch
@@ -520,13 +519,13 @@ impl App {
         });
     }
 
-    /// Locate a scope node by positional path (path[0] indexes `roots`).
+    /// Locate a scope node by positional path.
     fn scope_node_mut(&mut self, path: &[usize]) -> Option<&mut VarNode> {
         let (&first, rest) = path.split_first()?;
         descend(self.roots.get_mut(first)?, rest)
     }
 
-    /// Locate a watch node by positional path (path[0] indexes `watches`).
+    /// Locate a watch node by positional path.
     fn watch_node_mut(&mut self, path: &[usize]) -> Option<&mut VarNode> {
         let (&watch_index, rest) = path.split_first()?;
         let WatchState::Resolved(root) = &mut self.watches.get_mut(watch_index)?.state else {
@@ -578,8 +577,8 @@ impl App {
 
     /// Rebuild the cached row list when the version of `roots` or `watches` has
     /// advanced since the last build, then re-clamp the selection against the
-    /// fresh rows. A no-op when neither was touched mutably (selection moves,
-    /// idle ticks), so those paths neither re-flatten nor re-clone the tree.
+    /// fresh rows. A no-op when neither was touched mutably, so those paths
+    /// neither re-flatten nor re-clone the tree.
     fn sync_rows(&mut self) {
         let current = (self.roots.version(), self.watches.version());
         if self.rows_built_at != current {
@@ -589,9 +588,9 @@ impl App {
         }
     }
 
-    /// Flatten the watch section and scope tree into the rows currently visible
-    /// (collapsed subtrees omitted). Watches come first under a header, then the
-    /// scopes; every node row carries its `(tree, path)` address.
+    /// Flatten the watch section and scope tree into the rows currently visible.
+    /// Watches come first under a header, then the scopes. Every node row
+    /// carries its `(tree, path)` address.
     fn build_rows(&self) -> Vec<Row> {
         let mut out = Vec::new();
         if !self.watches.is_empty() {
@@ -803,9 +802,8 @@ impl Row {
 }
 
 /// Render one flattened row as a `ListItem`: the section header, a pending/
-/// unavailable watch placeholder, or a normal node (indent, optional pin and
-/// expand markers, name, and `: type` / `= value` / pending-fetch `…`).
-/// `live` dims node rows when the session isn't stopped (variables are stale).
+/// unavailable watch placeholder, or a normal node.
+/// `live` dims node rows when the session isn't stopped indicating the variables are stale.
 fn row_list_item(row: &Row, live: bool) -> ListItem<'static> {
     // Non-selectable section header, rendered as a dim divider label.
     if !row.selectable {

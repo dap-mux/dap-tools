@@ -76,8 +76,8 @@ pub async fn run(
 }
 
 async fn handle_stop(client: &DapClient, body: StoppedBody, stop_number: u64) {
-    // Resolve the stopped thread (preferring the stop event's thread id, else
-    // the first reported thread) and its top frame. A transport error or a
+    // Resolve the stopped thread, preferring the stop event's thread id or
+    // the first reported thread, and its top frame. A transport error or a
     // frameless stop is treated as idle.
     let Ok(Some(top)) = resolve_top_frame(client, body.thread_id).await else {
         return;
@@ -91,9 +91,7 @@ async fn handle_stop(client: &DapClient, body: StoppedBody, stop_number: u64) {
     );
     println!("{bar}");
 
-    // A stale frame (an `Ok` response with `success == false`) and a transport
-    // error both leave us nothing to print; only a successful reply carries
-    // scopes.
+    // A stale frame and a transport error both leave us nothing to print. Only a successful reply carries scopes.
     let scopes = match client
         .request("scopes", Some(json!({ "frameId": top.id })))
         .await
@@ -103,7 +101,7 @@ async fn handle_stop(client: &DapClient, body: StoppedBody, stop_number: u64) {
     };
     let any_locals = any_locals_scope(&scopes);
     for (index, scope) in scopes.into_iter().enumerate() {
-        // Show locals-style scopes by default; others (Globals, etc.) are huge
+        // Show locals-style scopes by default. Others (Globals, etc.) are huge
         // and noisy. Flip SHOW_ALL_SCOPES to include everything.
         if !SHOW_ALL_SCOPES && !scope_opens_by_default(&scope, index, any_locals) {
             println!("  [{}] (hidden — non-locals scope)", scope.name);

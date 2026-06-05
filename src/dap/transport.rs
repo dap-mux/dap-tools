@@ -2,8 +2,8 @@
 //!
 //! A single connection task owns the `TcpStream`, does `Content-Length`
 //! framing, and is the only thing that touches the socket. The rest of the app
-//! talks to it over channels: requests go in via a command channel (each with a
-//! `oneshot` reply), decoded events come out via an event channel.
+//! talks to it over channels: requests go in via a command channel, each with a
+//! `oneshot` reply, and decoded events come out via an event channel.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -80,8 +80,7 @@ impl DapClient {
 
 /// Connect to `address` and spawn the connection task.
 ///
-/// Returns the client handle and the event receiver. A connection failure
-/// (no mux listening) surfaces here as an `Err` so `main` can exit non-zero.
+/// Returns the client handle and the event receiver.
 pub async fn connect(address: &str) -> Result<(DapClient, mpsc::UnboundedReceiver<ConnEvent>)> {
     let stream = TcpStream::connect(address)
         .await
@@ -104,7 +103,7 @@ async fn connection_task(
     let mut pending: HashMap<i64, oneshot::Sender<Response>> = HashMap::new();
     let mut seq: i64 = 0;
     // Once all client handles drop, `cmd_rx.recv()` returns `None` forever and
-    // would be perpetually ready; disabling the branch keeps the `select!` from
+    // would be perpetually ready. Disabling the branch keeps the `select!` from
     // busy-spinning while it drains in-flight replies/events until EOF.
     let mut cmd_open = true;
 
