@@ -10,6 +10,19 @@ use serde_json::{Value, json};
 
 pub use transport::{ConnEvent, DapClient, connect};
 
+/// The mux address used when the user gives no target.
+pub const DEFAULT_ADDR: &str = "127.0.0.1:5679";
+
+/// Resolve an optional target into a concrete address. A bare port assumes the
+/// loopback host. Nothing falls back to the default mux address.
+pub fn resolve_addr(target: Option<&str>) -> String {
+    match target {
+        None => DEFAULT_ADDR.to_string(),
+        Some(t) if t.contains(':') => t.to_string(),
+        Some(port) => format!("127.0.0.1:{port}"),
+    }
+}
+
 /// Upper bound on the late-join `initialize` round-trip. A mux that accepts the
 /// connection but never answers must not wedge us here: this handshake runs
 /// before the event loop, so without a bound there would be no live Ctrl-C or

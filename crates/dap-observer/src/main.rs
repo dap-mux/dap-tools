@@ -8,8 +8,6 @@ use anyhow::Result;
 use clap::Parser;
 use dap_client::dap;
 
-const DEFAULT_ADDR: &str = "127.0.0.1:5679";
-
 /// Read-only DAP variable watcher for a dap-mux session.
 #[derive(Parser)]
 #[command(name = "dap-observer", version, about, long_about = None)]
@@ -24,14 +22,8 @@ struct Args {
 }
 
 impl Args {
-    /// Resolve the positional target into a concrete `host:port` address,
-    /// accepting a bare `port` and falling back to the standard mux address.
     fn addr(&self) -> String {
-        match self.target.as_deref() {
-            None => DEFAULT_ADDR.to_string(),
-            Some(t) if t.contains(':') => t.to_string(),
-            Some(port) => format!("127.0.0.1:{port}"),
-        }
+        dap::resolve_addr(self.target.as_deref())
     }
 }
 

@@ -19,8 +19,6 @@ use dap_client::model::SessionState;
 
 use repl::Session;
 
-const DEFAULT_ADDR: &str = "127.0.0.1:5679";
-
 /// Interactive DAP expression evaluator for a dap-mux session.
 #[derive(Parser)]
 #[command(name = "dap-repl", version, about, long_about = None)]
@@ -31,14 +29,8 @@ struct Args {
 }
 
 impl Args {
-    /// Turn the optional target into a concrete address. A bare port assumes the
-    /// loopback host. No argument falls back to the default mux address.
     fn addr(&self) -> String {
-        match self.target.as_deref() {
-            None => DEFAULT_ADDR.to_string(),
-            Some(t) if t.contains(':') => t.to_string(),
-            Some(port) => format!("127.0.0.1:{port}"),
-        }
+        dap::resolve_addr(self.target.as_deref())
     }
 }
 
