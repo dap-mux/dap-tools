@@ -62,9 +62,18 @@ enum Source {
     Event,
 }
 
-fn prompt() {
-    print!("(dap) ");
-    let _ = std::io::stdout().flush();
+/// Write text to the terminal and flush it. A failure here means the terminal is
+/// gone, for example an SSH session that dropped, so callers end the session
+/// rather than write into a void.
+fn emit(text: &str) -> Result<()> {
+    let mut stdout = std::io::stdout().lock();
+    stdout.write_all(text.as_bytes())?;
+    stdout.flush()?;
+    Ok(())
+}
+
+fn prompt() -> Result<()> {
+    emit("(dap) ")
 }
 
 async fn run(
@@ -72,36 +81,44 @@ async fn run(
     mut events: UnboundedReceiver<ConnEvent>,
     addr: &str,
 ) -> Result<i32> {
-    println!("connected to mux at {addr}");
+    emit(&format!("connected to mux at {addr}\n"))?;
     // Do the minimal late-join handshake. The mux then replays the current stopped state.
     dap::initialize(&client).await?;
-    println!("initialized. type an expression, or :help for commands. Ctrl-D quits.");
+    emit("initialized. type an expression, or :help for commands. Ctrl-D quits.\n")?;
 
     let mut session = Session::new();
     let mut last_input: Option<String> = None;
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut exit_code = 0;
-    prompt();
+    prompt()?;
 
+    // A write error inside the loop means the terminal is gone, the usual cause
+    // being a dropped SSH session. We are still attached to the shared mux, so we
+    // tear that down on the way out the same as any other exit, just with no exit
+    // code to report into a terminal that can no longer show it.
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
-                println!();
+                let _ = emit("\n");
                 break;
             }
             line = lines.next_line() => match line {
                 Ok(Some(raw)) => {
                     let outcome =
                         decide_input(&client, &mut session, &mut last_input, raw.trim()).await;
-                    render(&outcome, Source::Input);
+                    if render(&outcome, Source::Input).is_err() {
+                        break;
+                    }
                     if matches!(outcome, Outcome::Quit) {
                         break;
                     }
-                    prompt();
+                    if prompt().is_err() {
+                        break;
+                    }
                 }
                 // Stdin reached its end, for example from Ctrl-D.
                 Ok(None) => {
-                    println!();
+                    let _ = emit("\n");
                     break;
                 }
                 Err(e) => {
@@ -118,19 +135,22 @@ async fn run(
                     break;
                 }
                 Some(ConnEvent::Disconnected(None)) => {
-                    println!("\n■ session ended.");
+                    let _ = emit("\n■ session ended.\n");
                     break;
                 }
                 Some(ConnEvent::Dap(msg)) => {
                     let outcome = decide_event(&client, &mut session, msg).await;
-                    let shown = render(&outcome, Source::Event);
+                    let shown = match render(&outcome, Source::Event) {
+                        Ok(shown) => shown,
+                        Err(_) => break,
+                    };
                     if matches!(outcome, Outcome::Ended) {
                         break;
                     }
                     // Re-emit the prompt only when the event showed something, so
                     // the stream of ignored events stays silent.
-                    if shown {
-                        prompt();
+                    if shown && prompt().is_err() {
+                        break;
                     }
                 }
             },
@@ -142,9 +162,10 @@ async fn run(
 }
 
 /// Turn an outcome into the terminal output it stands for. This is the only place
-/// the print front-end writes. It returns whether anything was shown, so the loop
-/// can skip the reprompt when an outcome is silent.
-fn render(outcome: &Outcome, source: Source) -> bool {
+/// the print front-end writes. It reports whether anything was shown, so the loop
+/// can skip the reprompt when an outcome is silent, and surfaces a write error so
+/// the loop can end when the terminal goes away.
+fn render(outcome: &Outcome, source: Source) -> Result<bool> {
     let mut out = String::new();
     match outcome {
         Outcome::Evaluated { value, ty } => match ty {
@@ -202,15 +223,15 @@ fn render(outcome: &Outcome, source: Source) -> bool {
     }
 
     if out.is_empty() {
-        return false;
+        return Ok(false);
     }
-    let mut stdout = std::io::stdout();
+    let mut stdout = std::io::stdout().lock();
     if matches!(source, Source::Event) {
-        let _ = stdout.write_all(b"\n");
+        stdout.write_all(b"\n")?;
     }
-    let _ = stdout.write_all(out.as_bytes());
-    let _ = stdout.flush();
-    true
+    stdout.write_all(out.as_bytes())?;
+    stdout.flush()?;
+    Ok(true)
 }
 
 fn write_help(out: &mut String) {
