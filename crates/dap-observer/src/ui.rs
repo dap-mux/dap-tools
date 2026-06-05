@@ -16,9 +16,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph};
 
-use crate::dap::types::{EventMessage, StoppedBody};
-use crate::dap::{ConnEvent, DapClient, initialize};
-use crate::model::{
+use dap_client::dap::types::{EventMessage, StoppedBody};
+use dap_client::dap::{ConnEvent, DapClient, initialize};
+use dap_client::model::{
     FrameContext, FrameHeader, SessionState, VarNode, build_frame, evaluate_watch, fetch_children,
 };
 

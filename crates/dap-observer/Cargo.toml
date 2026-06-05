@@ -1,0 +1,14 @@
+[package]
+name = "dap-observer"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+dap-client = { path = "../dap-client" }
+anyhow.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+futures.workspace = true
+ratatui.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

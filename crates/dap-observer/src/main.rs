@@ -1,13 +1,12 @@
 //! dap-observer — a read-only, late-joining DAP client that rides a
 //! dap-mux session and renders the current frame's variables.
 
-mod dap;
 mod headless;
-mod model;
 mod ui;
 
 use anyhow::Result;
 use clap::Parser;
+use dap_client::dap;
 
 const DEFAULT_ADDR: &str = "127.0.0.1:5679";
 

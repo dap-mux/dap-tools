@@ -9,9 +9,11 @@ use std::pin::Pin;
 use anyhow::Result;
 use serde_json::json;
 
-use crate::dap::types::{ScopesBody, StoppedBody};
-use crate::dap::{ConnEvent, DapClient, initialize};
-use crate::model::{any_locals_scope, fetch_children, resolve_top_frame, scope_opens_by_default};
+use dap_client::dap::types::{ScopesBody, StoppedBody};
+use dap_client::dap::{ConnEvent, DapClient, initialize};
+use dap_client::model::{
+    any_locals_scope, fetch_children, resolve_top_frame, scope_opens_by_default,
+};
 
 const MAX_DEPTH: usize = 2; // how deep to expand containers in the printout
 const MAX_CHILDREN: usize = 40; // cap children shown per node
