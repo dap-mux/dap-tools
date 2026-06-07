@@ -194,7 +194,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "dap-observer"
+name = "dap-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -203,17 +203,6 @@ dependencies = [
  "dap-client",
  "futures",
  "ratatui",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "dap-repl"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dap-client",
  "serde_json",
  "tokio",
 ]

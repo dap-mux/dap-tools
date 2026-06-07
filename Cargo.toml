@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dap-client", "crates/dap-observer", "crates/dap-repl"]
+members = ["crates/dap-client", "crates/dap-tui"]
 
 [workspace.dependencies]
 anyhow = "1"

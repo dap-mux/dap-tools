@@ -4,13 +4,13 @@
 //! a breakpoint aka stopped. So the tree is dropped and re-rooted on every stop.
 //! An epoch counter tags in-flight work. Replies carrying a stale epoch are discarded.
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde_json::json;
 
 use crate::dap::DapClient;
 use crate::dap::types::{
-    EvaluateBody, Scope, ScopesBody, StackFrame, StackTraceBody, StoppedBody, ThreadsBody,
-    Variable, VariablesBody,
+    EvaluateBody, Scope, ScopesBody, StackFrame, StackTraceBody, ThreadsBody, Variable,
+    VariablesBody,
 };
 
 /// Live-ness of the debug session, as inferred purely from broadcast events.
@@ -46,23 +46,6 @@ impl VarNode {
     pub fn expandable(&self) -> bool {
         self.var_ref > 0
     }
-}
-
-/// Header describing the resolved top frame.
-pub struct FrameHeader {
-    pub name: String,
-    pub line: i64,
-    pub source: Option<String>,
-    pub reason: String,
-    pub stop_number: u64,
-}
-
-/// The result of resolving a stop: a header, the resolved frame id needed to
-/// `evaluate` watches against this frame, and seeded scope roots.
-pub struct FrameContext {
-    pub header: FrameHeader,
-    pub frame_id: i64,
-    pub roots: Vec<VarNode>,
 }
 
 /// debugpy's synthetic "special variables"/"function variables" grouping nodes.
@@ -184,80 +167,74 @@ pub async fn fetch_children(client: &DapClient, var_ref: i64) -> Vec<VarNode> {
     }
 }
 
-/// Resolve the stopped thread's top frame via `stackTrace`.
-///
-/// The stop event's `thread_id` is preferred and used directly. Only when it is
-/// absent do we query `threads` and fall back to the first reported thread.
-/// Returns `Ok(None)` for the no-threads / no-frames case which are shown as idle.
-pub async fn resolve_top_frame(
-    client: &DapClient,
-    thread_hint: Option<i64>,
-) -> Result<Option<StackFrame>> {
-    let thread_id = match thread_hint {
-        Some(id) => id,
-        None => {
-            let resp = client.request("threads", Some(json!({}))).await?;
-            match resp.parse_body::<ThreadsBody>()?.threads.first() {
-                Some(t) => t.id,
-                None => return Ok(None),
-            }
-        }
-    };
-
-    let stack_trace = client
-        .request(
-            "stackTrace",
-            Some(json!({ "threadId": thread_id, "levels": 1 })),
-        )
-        .await?;
-    if !stack_trace.success {
-        // A stale/failed stackTrace (e.g. the session resumed underneath us) is
-        // idle, not fatal: report no frame so the caller shows the idle state
-        // instead of surfacing an error. A genuine transport failure is a
-        // different thing — that propagates as `Err` from the `?` above.
-        return Ok(None);
-    }
-    Ok(stack_trace
-        .parse_body::<StackTraceBody>()
-        .unwrap_or_default()
-        .stack_frames
-        .into_iter()
-        .next())
+/// A resolved stop: the stopped thread, its full call stack, and the seeded scope
+/// roots of the top frame ready to display.
+pub struct StopResolution {
+    pub thread_id: Option<i64>,
+    pub stack: Vec<StackFrame>,
+    /// The top frame's id, or nothing when the stop resolved no frames.
+    pub frame_id: Option<i64>,
+    pub roots: Vec<VarNode>,
 }
 
-/// On a stop, resolve the stopped thread's top frame, fetch its scopes, and
-/// seed scope nodes.
+/// Resolve a stop into the stopped thread, its call stack, and the top frame's
+/// scopes.
 ///
-/// Returns `Ok(None)` for the no-frames case, which the UI shows as idle.
-pub async fn build_frame(
-    client: &DapClient,
-    body: StoppedBody,
-    stop_number: u64,
-) -> Result<Option<FrameContext>> {
-    // threads -> stackTrace -> scopes -> variables.
-    let Some(top) = resolve_top_frame(client, body.thread_id).await? else {
-        return Ok(None);
+/// The thread comes from the event when it carries one, otherwise from the first
+/// thread the adapter reports. A frameless stop resolves to an idle state with no
+/// frame and no roots.
+pub async fn resolve_stop(client: &DapClient, thread_hint: Option<i64>) -> Result<StopResolution> {
+    let thread_id = match thread_hint {
+        Some(id) => Some(id),
+        None => {
+            let resp = client.request("threads", Some(json!({}))).await?;
+            resp.parse_body::<ThreadsBody>()?
+                .threads
+                .first()
+                .map(|t| t.id)
+        }
     };
-
-    let frame_id = top.id;
-    let header = FrameHeader {
-        name: top.name,
-        line: top.line,
-        source: top.source.and_then(|s| s.name.or(s.path)),
-        reason: body.reason,
-        stop_number,
+    let stack = match thread_id {
+        Some(id) => fetch_stack(client, id).await?,
+        None => Vec::new(),
     };
+    let (frame_id, roots) = match stack.first() {
+        Some(top) => (Some(top.id), build_scope_roots(client, top.id).await?),
+        None => (None, Vec::new()),
+    };
+    Ok(StopResolution {
+        thread_id,
+        stack,
+        frame_id,
+        roots,
+    })
+}
 
-    // A stale frame (an `Ok` response with `success == false`) is tolerated as
-    // an empty tree, but a transport error means the connection is gone — that
-    // surfaces instead of masquerading as a frame with no variables.
+/// Fetch a thread's full call stack. A stale request after the program resumed
+/// underneath us yields an empty stack rather than an error.
+async fn fetch_stack(client: &DapClient, thread_id: i64) -> Result<Vec<StackFrame>> {
+    let resp = client
+        .request("stackTrace", Some(json!({ "threadId": thread_id })))
+        .await?;
+    if !resp.success {
+        return Ok(Vec::new());
+    }
+    Ok(resp.parse_body::<StackTraceBody>()?.stack_frames)
+}
+
+/// Fetch a frame's scopes and seed scope nodes, expanding the default scope.
+///
+/// A stale frame, an `Ok` response with `success == false`, is tolerated as an
+/// empty scope list. A transport error means the connection is gone, so it
+/// surfaces instead of masquerading as a frame with no variables.
+pub async fn build_scope_roots(client: &DapClient, frame_id: i64) -> Result<Vec<VarNode>> {
     let scopes = match client
         .request("scopes", Some(json!({ "frameId": frame_id })))
         .await
     {
         Ok(resp) if resp.success => resp.parse_body::<ScopesBody>().unwrap_or_default().scopes,
         Ok(_) => Vec::new(),
-        Err(e) => anyhow::bail!("scopes failed: {e:#}"),
+        Err(e) => bail!("scopes failed: {e:#}"),
     };
 
     let any_locals = any_locals_scope(&scopes);
@@ -275,16 +252,58 @@ pub async fn build_frame(
             expanded: expand_default,
         };
         // Only the default-expanded scope is fetched now. Nested containers stay
-        // lazy (fetched on demand when the user expands them).
+        // lazy, fetched on demand when the user expands them.
         if expand_default && node.var_ref > 0 {
             node.children = Some(fetch_children(client, node.var_ref).await);
         }
         roots.push(node);
     }
+    Ok(roots)
+}
 
-    Ok(Some(FrameContext {
-        header,
-        frame_id,
-        roots,
-    }))
+/// Evaluate a user-typed expression against a frame using the [repl evaluate
+/// context](https://microsoft.github.io/debug-adapter-protocol/specification#Requests_Evaluate)
+/// of the Debug Adapter Protocol.
+///
+/// That context is not sandboxed. A typed expression can assign to variables or
+/// call functions, so evaluating one can change the running program. The result
+/// is returned as a node so a structured value can be expanded and pinned as a
+/// watch like any frame variable.
+pub async fn evaluate(client: &DapClient, expression: &str, frame_id: i64) -> Result<VarNode> {
+    let resp = client
+        .request(
+            "evaluate",
+            Some(json!({
+                "expression": expression,
+                "frameId": frame_id,
+                "context": "repl"
+            })),
+        )
+        .await?;
+    if !resp.success {
+        bail!(
+            "{}",
+            resp.message.unwrap_or_else(|| "evaluate failed".into())
+        );
+    }
+    Ok(node_from_evaluate(
+        expression,
+        resp.parse_body::<EvaluateBody>()?,
+    ))
+}
+
+/// Drive execution of the stopped thread. The command is a DAP run-control
+/// request such as continue, next, stepIn, stepOut, or pause. The resulting stop
+/// or resume arrives later as a broadcast event.
+pub async fn drive(client: &DapClient, command: &str, thread_id: i64) -> Result<()> {
+    let resp = client
+        .request(command, Some(json!({ "threadId": thread_id })))
+        .await?;
+    if !resp.success {
+        bail!(
+            "{}",
+            resp.message.unwrap_or_else(|| format!("{command} failed"))
+        );
+    }
+    Ok(())
 }

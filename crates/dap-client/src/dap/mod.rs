@@ -48,9 +48,9 @@ pub async fn initialize(client: &DapClient) -> Result<()> {
 /// session and never to us.
 pub fn initialize_args() -> Value {
     json!({
-        "adapterID": "dap-observer",
-        "clientID": "dap-observer",
-        "clientName": "dap-observer",
+        "adapterID": "dap-tui",
+        "clientID": "dap-tui",
+        "clientName": "dap-tui",
         "pathFormat": "path",
         "linesStartAt1": true,
         "columnsStartAt1": true,
