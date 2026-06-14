@@ -1,17 +1,23 @@
 ![Screenshot](./assets/screenshot.png)
 
+# DAP Tools
+
+This is a collection of tools for use with a Debugger capable of speaking the Debug Adapter Protocol aka [DAP](https://microsoft.github.io/debug-adapter-protocol/).
+
 # dap-tui
 
 You have that debugger running. Breakpoints set. But.... what are the values on the stack
 right now?? How could you possibly learn that? Well, this will do it.
 
-`dap-observer` is a small, tool that does one thing -- it connects to a DAP session and
-shows the values of the variables while the debugger steps through the code.
+`dap-tui` connects to a DAP session and shows the values of the variables while the debugger steps through the code.
+You can also step right here too.
 
-Now, for this to work you need a multiplexer for the DAP. Otherwise your editor/IDE gets
-all of the fun. [dap-mux](https://github.com/dap-mux/dap-mux) is one of those.
+Now, maximum effect you need a multiplexer for the DAP. Without one you can drive the session but not see the code.
+I don't know about you but that does not sound like fun. [dap-mux](https://github.com/dap-mux/dap-mux) is one choice.
+[dap-mux-rs](https://github.com/dap-mux/dap-mux-rs) is another. The Rust form has the advantage of talking either TCP
+or stdio.
 
-The observer only ever *joins* an existing multiplexer session. It does not spawn the adapter
+dap-tui is an observer and only ever *joins* an existing multiplexer session. It does not spawn the adapter
 or manage the session.
 
 ```sh
@@ -28,7 +34,7 @@ dap-tui 5680           # custom port
 dap-tui host:port      # custom host + port
 ```
 
-Step in the editor. The observer refreshes its variable tree whenever execution stops
+Step in the editor. The TUI refreshes its variable tree whenever execution stops
 at a breakpoint.
 
 ### Watches
